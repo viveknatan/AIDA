@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, List
 import pandas as pd
+from config import Configuration
 
 # Try to import the database manager - use whichever is available
 try:
@@ -13,22 +14,14 @@ except ImportError:
     except ImportError:
         raise ImportError("❌ Could not find database.py or database_test.py. Please create one of these files.")
 
-# Try to import the LLM handler - use whichever is available
-try:
-    from llm_handler_simple import LLMHandler
-    print("✅ Using llm_handler_simple.py")
-except ImportError:
-    try:
-        from llm_handler import LLMHandler
-        print("✅ Using llm_handler.py")
-    except ImportError:
-        raise ImportError("❌ Could not find llm_handler.py or llm_handler_simple.py. Please create one of these files.")
-
+# Import the modern LLM handler
+from llm_handler import LLMHandler
 from visualization import VisualizationManager
 
 class AgentState(TypedDict):
     question: str
     schema_info: dict
+    intent: dict  # Will store QuestionIntent result
     sql_query: str
     query_results: pd.DataFrame
     analysis: str
@@ -36,9 +29,10 @@ class AgentState(TypedDict):
     error: str
 
 class DataAnalystAgent:
-    def __init__(self):
+    def __init__(self, config: Configuration = None):
+        self.config = config or Configuration()
         self.db_manager = DatabaseManager()
-        self.llm_handler = LLMHandler()
+        self.llm_handler = LLMHandler(self.config)
         self.viz_manager = VisualizationManager()
         self.graph = self._build_graph()
     
@@ -51,6 +45,40 @@ class DataAnalystAgent:
                 state["schema_info"] = self.db_manager.get_schema_info()
             except Exception as e:
                 state["error"] = f"Schema retrieval failed: {str(e)}"
+            return state
+        
+        def classify_intent(state: AgentState) -> AgentState:
+            """Classify whether the question requires database access"""
+            try:
+                intent_result = self.llm_handler.classify_question_intent(
+                    state["question"], 
+                    state["schema_info"]
+                )
+                
+                # Convert Pydantic model to dict for state storage
+                intent_dict = {
+                    "is_database_related": intent_result.is_database_related,
+                    "confidence": intent_result.confidence,
+                    "reasoning": intent_result.reasoning,
+                    "suggested_response": intent_result.suggested_response
+                }
+                
+                state["intent"] = intent_dict
+                
+                # If not database-related, set a helpful response
+                if not intent_result.is_database_related:
+                    response = intent_result.suggested_response or (
+                        "I'm an AI Data Analyst specialized in analyzing database information. "
+                        f"Your question '{state['question']}' appears to be a general question that doesn't relate to the available data in our database. "
+                        "I can help you analyze data from our database which contains information about "
+                        f"{', '.join(state['schema_info'].keys()) if state['schema_info'] else 'various business entities'}. "
+                        "Please ask questions about the data in our database, such as showing records, calculating totals, or finding patterns in the data."
+                    )
+                    state["analysis"] = response
+                    
+            except Exception as e:
+                state["error"] = f"Intent classification failed: {str(e)}"
+            
             return state
         
         def generate_sql(state: AgentState) -> AgentState:
@@ -105,18 +133,43 @@ class DataAnalystAgent:
                 state["error"] = f"Visualization failed: {str(e)}"
             return state
         
+        def should_process_database_query(state: AgentState) -> str:
+            """Decide whether to proceed with database query or return early"""
+            if state.get("error"):
+                return "end"
+            
+            intent = state.get("intent", {})
+            is_db_related = intent.get("is_database_related", True)
+            confidence = intent.get("confidence", 0.0)
+            
+            # High confidence non-database questions should skip database processing
+            if not is_db_related and confidence > 0.7:
+                return "end"
+            
+            # Low confidence or database-related questions should proceed
+            return "generate_sql"
+        
         # Build the graph
         graph = StateGraph(AgentState)
         
         # Add nodes
         graph.add_node("get_schema", get_schema)
+        graph.add_node("classify_intent", classify_intent)
         graph.add_node("generate_sql", generate_sql)
         graph.add_node("execute_query", execute_query)
         graph.add_node("analyze_results", analyze_results)
         graph.add_node("create_visualization", create_visualization)
         
-        # Add edges
-        graph.add_edge("get_schema", "generate_sql")
+        # Add edges with conditional flow
+        graph.add_edge("get_schema", "classify_intent")
+        graph.add_conditional_edges(
+            "classify_intent",
+            should_process_database_query,
+            {
+                "generate_sql": "generate_sql",
+                "end": END
+            }
+        )
         graph.add_edge("generate_sql", "execute_query")
         graph.add_edge("execute_query", "analyze_results")
         graph.add_edge("analyze_results", "create_visualization")
@@ -132,6 +185,7 @@ class DataAnalystAgent:
         initial_state = AgentState(
             question=question,
             schema_info={},
+            intent={},
             sql_query="",
             query_results=pd.DataFrame(),
             analysis="",

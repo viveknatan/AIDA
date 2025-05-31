@@ -1,2 +1,2 @@
 [console_scripts]
-start = streamlit_app:main
+start = streamlit:main

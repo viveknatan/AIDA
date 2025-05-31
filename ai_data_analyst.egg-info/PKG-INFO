@@ -5,11 +5,13 @@ Summary: AI Data Analyst with natural language to SQL
 Requires-Python: ==3.12
 License-File: LICENSE
 Requires-Dist: langgraph>=0.0.55
+Requires-Dist: langchain-openai>=0.1.0
+Requires-Dist: langchain-core>=0.1.0
+Requires-Dist: openai>=1.10.0
 Requires-Dist: sqlalchemy>=2.0.23
 Requires-Dist: pandas>=2.1.3
 Requires-Dist: plotly>=5.17.0
 Requires-Dist: streamlit>=1.28.1
 Requires-Dist: psycopg>=3.1.0
-Requires-Dist: openai==0.27.0
 Requires-Dist: python-dotenv>=1.0.0
 Dynamic: license-file
